@@ -14,7 +14,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Threading;
 
-public static class RickyInput {
+public static class JarvisInput {
   [StructLayout(LayoutKind.Sequential)]
   struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
   [StructLayout(LayoutKind.Sequential)]
@@ -144,7 +144,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-public static class RickyWindow {
+public static class JarvisWindow {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int max);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
@@ -169,7 +169,7 @@ function addType(source) {
   return `Add-Type -TypeDefinition @'\n${source}\n'@`;
 }
 
-// User-supplied values are passed as RICKY_* environment variables, never interpolated into the script.
+// User-supplied values are passed as JARVIS_* environment variables, never interpolated into the script.
 async function runPowerShell(body, env = {}, timeout = 30000) {
   const script = `$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -197,7 +197,7 @@ async function openApp(appName) {
   const name = appName.trim();
   if (!name) throw new Error("appName is required.");
   return runPowerShell(
-    `$name = $env:RICKY_APP_NAME
+    `$name = $env:JARVIS_APP_NAME
 try {
   Start-Process -FilePath $name
   Write-Output $name
@@ -211,30 +211,30 @@ $app = Get-StartApps |
 if (-not $app) { throw "Could not find an app named '$name'." }
 Start-Process -FilePath ('shell:AppsFolder\\' + $app.AppID)
 Write-Output $app.Name`,
-    { RICKY_APP_NAME: name },
+    { JARVIS_APP_NAME: name },
   );
 }
 
 async function typeText(text) {
-  await runPowerShell(`${addType(INPUT_HELPER)}\n[RickyInput]::TypeText($env:RICKY_TEXT)`, { RICKY_TEXT: text }, 30000 + text.length * 20);
+  await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::TypeText($env:JARVIS_TEXT)`, { JARVIS_TEXT: text }, 30000 + text.length * 20);
 }
 
 async function pressKey(key, repeat) {
   const vk = VIRTUAL_KEYS[String(key || "").toLowerCase()];
   if (!vk) throw new Error(`Unsupported key: ${key}`);
-  await runPowerShell(`${addType(INPUT_HELPER)}\n[RickyInput]::PressKey(${vk}, ${Math.trunc(repeat)})`);
+  await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::PressKey(${vk}, ${Math.trunc(repeat)})`);
 }
 
 async function click(x, y) {
   if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("x and y must be numbers.");
-  await runPowerShell(`${addType(INPUT_HELPER)}\n[RickyInput]::Click(${Math.round(x)}, ${Math.round(y)})`);
+  await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::Click(${Math.round(x)}, ${Math.round(y)})`);
 }
 
 async function scroll(direction, amount) {
   const horizontal = direction === "left" || direction === "right";
   const sign = direction === "up" || direction === "right" ? 1 : -1;
   const delta = sign * 120 * Math.trunc(amount);
-  await runPowerShell(`${addType(INPUT_HELPER)}\n[RickyInput]::Scroll(${delta}, $${horizontal})`);
+  await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::Scroll(${delta}, $${horizontal})`);
 }
 
 // Captures the primary display at physical resolution, writes a PNG, and returns a data URL for the artifact panel.
@@ -254,11 +254,11 @@ async function captureScreen(screenshotPath) {
 async function inspectUi() {
   return runPowerShell(`${addType(WINDOW_HELPER)}
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-$hwnd = [RickyWindow]::GetForegroundWindow()
+$hwnd = [JarvisWindow]::GetForegroundWindow()
 $title = New-Object System.Text.StringBuilder 512
-[void][RickyWindow]::GetWindowText($hwnd, $title, $title.Capacity)
+[void][JarvisWindow]::GetWindowText($hwnd, $title, $title.Capacity)
 $processId = [uint32]0
-[void][RickyWindow]::GetWindowThreadProcessId($hwnd, [ref]$processId)
+[void][JarvisWindow]::GetWindowThreadProcessId($hwnd, [ref]$processId)
 $appName = ''
 $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
 if ($process) {

@@ -1,17 +1,17 @@
 import { useRef, useState } from "react";
 import { BrainCircuit, Expand, History, Keyboard, Mic, MicOff, MonitorCog, PanelRight, Send } from "lucide-react";
 import { ArtifactPanel } from "./components/ArtifactPanel";
-import { RickyFace } from "./components/RickyFace";
-import { newEntry, RickyRealtimeClient, type MouthShape, type RickyConnectionState, type RickyMood, type TranscriptEntry } from "./lib/realtime";
-import type { RickyArtifact } from "./vite-env";
+import { JarvisFace } from "./components/JarvisFace";
+import { newEntry, JarvisRealtimeClient, type MouthShape, type JarvisConnectionState, type JarvisMood, type TranscriptEntry } from "./lib/realtime";
+import type { JarvisArtifact } from "./vite-env";
 
-type RickyMode = "display" | "computer";
+type JarvisMode = "display" | "computer";
 
 export default function App() {
-  const [connectionState, setConnectionState] = useState<RickyConnectionState>("idle");
-  const [mood, setMood] = useState<RickyMood>("idle");
-  const [mode, setMode] = useState<RickyMode>("display");
-  const [artifact, setArtifact] = useState<RickyArtifact | null>(null);
+  const [connectionState, setConnectionState] = useState<JarvisConnectionState>("idle");
+  const [mood, setMood] = useState<JarvisMood>("idle");
+  const [mode, setMode] = useState<JarvisMode>("display");
+  const [artifact, setArtifact] = useState<JarvisArtifact | null>(null);
   const [artifactVisible, setArtifactVisible] = useState(true);
   const [artifactFullscreen, setArtifactFullscreen] = useState(false);
   const [showLog, setShowLog] = useState(false);
@@ -22,12 +22,12 @@ export default function App() {
   ]);
   const [status, setStatus] = useState("Idle");
   const [textPrompt, setTextPrompt] = useState("");
-  const clientRef = useRef<RickyRealtimeClient | null>(null);
+  const clientRef = useRef<JarvisRealtimeClient | null>(null);
 
   const isConnected = connectionState === "connected";
 
   async function connect() {
-    const client = new RickyRealtimeClient({
+    const client = new JarvisRealtimeClient({
       onConnectionState: setConnectionState,
       onMood: setMood,
       onMouthShape: setMouthShape,
@@ -64,9 +64,9 @@ export default function App() {
     setStatus("Disconnected");
   }
 
-  async function switchMode(nextMode: RickyMode) {
+  async function switchMode(nextMode: JarvisMode) {
     setMode(nextMode);
-    const result = await window.ricky.executeTool({ name: "set_mode", arguments: { mode: nextMode } });
+    const result = await window.jarvis.executeTool({ name: "set_mode", arguments: { mode: nextMode } });
     if (result.artifact) setArtifact(result.artifact);
     if (nextMode === "computer") {
       setArtifactVisible(false);
@@ -91,7 +91,7 @@ export default function App() {
     return (
       <main className="app-shell app-shell-mini">
         <section className="mini-companion" aria-label="Jarvis computer use mini mode">
-          <RickyFace mood={mood} mouthShape={mouthShape} />
+          <JarvisFace mood={mood} mouthShape={mouthShape} />
           <button
             className="mini-restore-button"
             onClick={() => void switchMode("display")}
@@ -111,7 +111,7 @@ export default function App() {
       <div className="window-drag-left-zone" aria-hidden="true" />
       <section className="companion-window">
         <section className="face-stage">
-          <RickyFace mood={mood} mouthShape={mouthShape} />
+          <JarvisFace mood={mood} mouthShape={mouthShape} />
         </section>
 
         <footer className="bottom-console">
@@ -195,7 +195,7 @@ export default function App() {
               {transcript.map((entry) => (
                 <article className={`entry entry-${entry.role}`} key={entry.id}>
                   <div>
-                    <strong>{entry.role === "ricky" ? "Jarvis" : entry.role}</strong>
+                    <strong>{entry.role === "jarvis" ? "Jarvis" : entry.role}</strong>
                     <time>{entry.at}</time>
                   </div>
                   <p>{entry.text}</p>

@@ -12,13 +12,15 @@ dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 const execFileAsync = promisify(execFile);
 const isWindows = process.platform === "win32";
 const dataDir = path.join(process.cwd(), "data");
-const dbPath = path.join(dataDir, "ricky-db.json");
+const dbPath = path.join(dataDir, "jarvis-db.json");
+// Pre-rename name of the database; migrated to dbPath on first run.
+const legacyDbPath = path.join(dataDir, "ricky-db.json");
 let currentMode = "display";
 let mainWindow = null;
 let normalWindowBounds = null;
 let dbWriteQueue = Promise.resolve();
 
-const RICKY_INSTRUCTIONS = `# Role and Objective
+const JARVIS_INSTRUCTIONS = `# Role and Objective
 You are Jarvis, Luis's desktop AI operator. You speak through realtime voice and can use local tools.
 
 # Personality and Tone
@@ -368,6 +370,10 @@ async function ensureData() {
   try {
     await fs.access(dbPath);
   } catch {
+    try {
+      await fs.rename(legacyDbPath, dbPath);
+      return;
+    } catch {}
     await fs.writeFile(dbPath, JSON.stringify(defaultDb(), null, 2));
   }
 }
@@ -563,14 +569,14 @@ ipcMain.handle("realtime:create-token", async () => {
     throw new Error("OPENAI_API_KEY is missing in .env.local");
   }
   const db = await readDb();
-  const instructions = `${RICKY_INSTRUCTIONS}\n\n${buildThumbnailBoardInstructions(db)}`;
+  const instructions = `${JARVIS_INSTRUCTIONS}\n\n${buildThumbnailBoardInstructions(db)}`;
 
   const response = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
-      "OpenAI-Safety-Identifier": crypto.createHash("sha256").update("riley-local-ricky").digest("hex"),
+      "OpenAI-Safety-Identifier": crypto.createHash("sha256").update("luis-local-jarvis").digest("hex"),
     },
     body: JSON.stringify({
       session: {
@@ -1053,7 +1059,7 @@ async function generateImage(args) {
   const url = data.data?.[0]?.url;
   if (b64) {
     await fs.mkdir(dataDir, { recursive: true });
-    const imagePath = path.join(dataDir, `ricky-image-${Date.now()}.png`);
+    const imagePath = path.join(dataDir, `jarvis-image-${Date.now()}.png`);
     await fs.writeFile(imagePath, Buffer.from(b64, "base64"));
     return {
       ok: true,

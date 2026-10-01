@@ -1,7 +1,7 @@
-import type { RickyArtifact, RickyToolCall, RickyToolResult, RickyToolSpec } from "../vite-env";
+import type { JarvisArtifact, JarvisToolCall, JarvisToolResult, JarvisToolSpec } from "../vite-env";
 
-export type RickyConnectionState = "idle" | "connecting" | "connected" | "error";
-export type RickyMood = "idle" | "listening" | "thinking" | "speaking" | "working" | "error";
+export type JarvisConnectionState = "idle" | "connecting" | "connected" | "error";
+export type JarvisMood = "idle" | "listening" | "thinking" | "speaking" | "working" | "error";
 
 export type MouthShape = {
   open: number;
@@ -12,17 +12,17 @@ export type MouthShape = {
 
 export type TranscriptEntry = {
   id: string;
-  role: "user" | "ricky" | "system" | "tool";
+  role: "user" | "jarvis" | "system" | "tool";
   text: string;
   at: string;
 };
 
 export type RealtimeCallbacks = {
-  onConnectionState: (state: RickyConnectionState) => void;
-  onMood: (mood: RickyMood) => void;
+  onConnectionState: (state: JarvisConnectionState) => void;
+  onMood: (mood: JarvisMood) => void;
   onMouthShape: (shape: MouthShape) => void;
   onTranscript: (entry: TranscriptEntry) => void;
-  onArtifact: (artifact: RickyArtifact) => void;
+  onArtifact: (artifact: JarvisArtifact) => void;
   onMode: (mode: "display" | "computer") => void;
   onStatus: (message: string) => void;
   onThumbnailReady: () => void;
@@ -55,13 +55,13 @@ type ResponseOutputItem = {
 
 const realtimeUrl = "https://api.openai.com/v1/realtime/calls";
 
-export class RickyRealtimeClient {
+export class JarvisRealtimeClient {
   private pc: RTCPeerConnection | null = null;
   private dc: RTCDataChannel | null = null;
   private micStream: MediaStream | null = null;
   private callbacks: RealtimeCallbacks;
   private currentAssistantText = "";
-  private toolSpecs: RickyToolSpec[] = [];
+  private toolSpecs: JarvisToolSpec[] = [];
   private toolRunning = false;
   private audioContext: AudioContext | null = null;
   private outputAnalyser: AnalyserNode | null = null;
@@ -79,8 +79,8 @@ export class RickyRealtimeClient {
     this.callbacks.onStatus("Minting a Realtime client secret.");
 
     try {
-      this.toolSpecs = await window.ricky.getToolSpecs();
-      const token = await window.ricky.createRealtimeToken();
+      this.toolSpecs = await window.jarvis.getToolSpecs();
+      const token = await window.jarvis.createRealtimeToken();
       const pc = new RTCPeerConnection();
       const audio = document.createElement("audio");
       audio.autoplay = true;
@@ -219,7 +219,7 @@ export class RickyRealtimeClient {
     if (event.type === "response.done") {
       const output = event.response?.output || [];
       const spoken = this.currentAssistantText || output.map(collectOutputText).filter(Boolean).join("\n");
-      if (spoken) this.callbacks.onTranscript(newEntry("ricky", spoken));
+      if (spoken) this.callbacks.onTranscript(newEntry("jarvis", spoken));
       this.currentAssistantText = "";
 
       const functionCalls = output.filter((item) => item.type === "function_call" && item.name && item.call_id);
@@ -261,18 +261,18 @@ export class RickyRealtimeClient {
         });
       }
       if (name === "thumbnail_generate" || name === "thumbnail_edit") {
-        const loadingResult = await window.ricky.executeTool({
+        const loadingResult = await window.jarvis.executeTool({
           name: "thumbnail_loading_prepare",
           arguments: {
             ...parsedArgs,
             mode: name === "thumbnail_edit" ? "edit" : "generate",
           },
-        } satisfies RickyToolCall);
+        } satisfies JarvisToolCall);
         if (typeof loadingResult.runId === "string") parsedArgs.runId = loadingResult.runId;
         if (typeof loadingResult.targetId === "string") parsedArgs.targetId = loadingResult.targetId;
         if (loadingResult.artifact) this.callbacks.onArtifact(loadingResult.artifact);
       }
-      const result = await window.ricky.executeTool({ name, arguments: parsedArgs } satisfies RickyToolCall);
+      const result = await window.jarvis.executeTool({ name, arguments: parsedArgs } satisfies JarvisToolCall);
       if (result.mode === "display" || result.mode === "computer") {
         this.callbacks.onMode(result.mode);
       }
@@ -286,7 +286,7 @@ export class RickyRealtimeClient {
     this.toolRunning = false;
   }
 
-  private async returnToolOutput(callId: string, result: RickyToolResult): Promise<void> {
+  private async returnToolOutput(callId: string, result: JarvisToolResult): Promise<void> {
     this.sendEvent({
       type: "conversation.item.create",
       item: {
@@ -422,7 +422,7 @@ function parseToolArguments(raw: string): Record<string, unknown> {
   }
 }
 
-function sanitizeToolResult(result: RickyToolResult): RickyToolResult {
+function sanitizeToolResult(result: JarvisToolResult): JarvisToolResult {
   if (!result.artifact) return result;
 
   const { artifact, ...rest } = result;

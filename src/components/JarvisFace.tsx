@@ -1,12 +1,12 @@
 import type { CSSProperties } from "react";
-import type { MouthShape, RickyMood } from "../lib/realtime";
+import type { MouthShape, JarvisMood } from "../lib/realtime";
 
-type RickyFaceProps = {
-  mood: RickyMood;
+type JarvisFaceProps = {
+  mood: JarvisMood;
   mouthShape: MouthShape;
 };
 
-export function RickyFace({ mood, mouthShape }: RickyFaceProps) {
+export function JarvisFace({ mood, mouthShape }: JarvisFaceProps) {
   return (
     <div
       className={`face face-${mood}`}

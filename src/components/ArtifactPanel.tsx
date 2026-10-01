@@ -1,9 +1,9 @@
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import mermaid from "mermaid";
-import type { RickyArtifact } from "../vite-env";
+import type { JarvisArtifact } from "../vite-env";
 
 type ArtifactPanelProps = {
-  artifact: RickyArtifact | null;
+  artifact: JarvisArtifact | null;
   visible: boolean;
   fullscreen: boolean;
   onToggleVisible: () => void;
@@ -122,7 +122,7 @@ function EmptyArtifact() {
   );
 }
 
-function renderArtifact(artifact: RickyArtifact, mermaidState: MermaidState) {
+function renderArtifact(artifact: JarvisArtifact, mermaidState: MermaidState) {
   if (artifact.kind === "table") {
     return <JsonTable content={artifact.content} />;
   }
