@@ -12,6 +12,7 @@ const INPUT_HELPER = `
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 public static class RickyInput {
   [StructLayout(LayoutKind.Sequential)]
@@ -27,8 +28,18 @@ public static class RickyInput {
   [DllImport("user32.dll", SetLastError = true)] static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr value);
   [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, IntPtr processId);
+  [DllImport("user32.dll")] static extern IntPtr GetKeyboardLayout(uint threadId);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern short VkKeyScanEx(char c, IntPtr layout);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern uint MapVirtualKeyEx(uint code, uint mapType, IntPtr layout);
+  [DllImport("user32.dll")] static extern short GetKeyState(int vk);
 
   const uint INPUT_MOUSE = 0, INPUT_KEYBOARD = 1;
+  const ushort VK_SHIFT = 0x10;
+  const int VK_CAPITAL = 0x14;
+  const uint MAPVK_VK_TO_VSC = 0, MAPVK_VK_TO_CHAR = 2;
+  public const int TypeDelayMs = 8;
   const uint KEYEVENTF_EXTENDEDKEY = 0x1, KEYEVENTF_KEYUP = 0x2, KEYEVENTF_UNICODE = 0x4;
   const uint MOUSEEVENTF_LEFTDOWN = 0x2, MOUSEEVENTF_LEFTUP = 0x4, MOUSEEVENTF_WHEEL = 0x800, MOUSEEVENTF_HWHEEL = 0x1000;
 
@@ -73,13 +84,47 @@ public static class RickyInput {
     }
   }
 
+  // Types each character as a real keystroke on the target window's layout, falling back to
+  // VK_PACKET only for characters the layout can't produce. Chromium/WinUI apps read queued
+  // VK_PACKET events lazily and can repeat the last character ("Hello ddddd"), so we also pace input.
   public static void TypeText(string text) {
-    foreach (char c in text) {
+    uint threadId = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero);
+    IntPtr layout = GetKeyboardLayout(threadId);
+    bool capsLock = (GetKeyState(VK_CAPITAL) & 1) != 0;
+    for (int i = 0; i < text.Length; i++) {
+      char c = text[i];
       if (c == '\\r') continue;
-      if (c == '\\n') { PressKey(0x0D, 1); continue; }
-      if (c == '\\t') { PressKey(0x09, 1); continue; }
-      Send(Key(0, c, KEYEVENTF_UNICODE), Key(0, c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+      if (c == '\\n') PressKey(0x0D, 1);
+      else if (c == '\\t') PressKey(0x09, 1);
+      else if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1])) {
+        char low = text[++i];
+        Send(Key(0, c, KEYEVENTF_UNICODE), Key(0, low, KEYEVENTF_UNICODE),
+             Key(0, c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP), Key(0, low, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+      }
+      else if (!TypeWithLayout(c, layout, capsLock)) {
+        Send(Key(0, c, KEYEVENTF_UNICODE), Key(0, c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+      }
+      Thread.Sleep(TypeDelayMs);
     }
+  }
+
+  static bool TypeWithLayout(char c, IntPtr layout, bool capsLock) {
+    short scan = VkKeyScanEx(c, layout);
+    if (scan == -1) return false;
+    ushort vk = (ushort)(scan & 0xFF);
+    int mods = (scan >> 8) & 0xFF;
+    // Skip Ctrl/Alt (AltGr) combos, which can trigger shortcuts, and dead keys, which would compose.
+    if ((mods & 0x06) != 0 || (MapVirtualKeyEx(vk, MAPVK_VK_TO_CHAR, layout) & 0x80000000) != 0) return false;
+    bool shift = (mods & 0x01) != 0;
+    if (capsLock && vk >= 0x41 && vk <= 0x5A) shift = !shift;
+    ushort hw = (ushort)MapVirtualKeyEx(vk, MAPVK_VK_TO_VSC, layout);
+    if (shift) {
+      ushort shiftScan = (ushort)MapVirtualKeyEx(VK_SHIFT, MAPVK_VK_TO_VSC, layout);
+      Send(Key(VK_SHIFT, shiftScan, 0), Key(vk, hw, 0), Key(vk, hw, KEYEVENTF_KEYUP), Key(VK_SHIFT, shiftScan, KEYEVENTF_KEYUP));
+    } else {
+      Send(Key(vk, hw, 0), Key(vk, hw, KEYEVENTF_KEYUP));
+    }
+    return true;
   }
 
   public static void Click(int x, int y) {
@@ -125,7 +170,7 @@ function addType(source) {
 }
 
 // User-supplied values are passed as RICKY_* environment variables, never interpolated into the script.
-async function runPowerShell(body, env = {}) {
+async function runPowerShell(body, env = {}, timeout = 30000) {
   const script = `$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -139,7 +184,7 @@ ${body}
     const { stdout } = await execFileAsync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-      { env: { ...process.env, ...env }, windowsHide: true, timeout: 30000 },
+      { env: { ...process.env, ...env }, windowsHide: true, timeout },
     );
     return stdout.replace(/\r\n/g, "\n").trim();
   } catch (error) {
@@ -171,7 +216,7 @@ Write-Output $app.Name`,
 }
 
 async function typeText(text) {
-  await runPowerShell(`${addType(INPUT_HELPER)}\n[RickyInput]::TypeText($env:RICKY_TEXT)`, { RICKY_TEXT: text });
+  await runPowerShell(`${addType(INPUT_HELPER)}\n[RickyInput]::TypeText($env:RICKY_TEXT)`, { RICKY_TEXT: text }, 30000 + text.length * 20);
 }
 
 async function pressKey(key, repeat) {
