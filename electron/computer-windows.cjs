@@ -50,7 +50,8 @@ public static class JarvisInput {
   const uint MAPVK_VK_TO_VSC = 0, MAPVK_VK_TO_CHAR = 2;
   public const int TypeDelayMs = 8;
   const uint KEYEVENTF_EXTENDEDKEY = 0x1, KEYEVENTF_KEYUP = 0x2, KEYEVENTF_UNICODE = 0x4;
-  const uint MOUSEEVENTF_LEFTDOWN = 0x2, MOUSEEVENTF_LEFTUP = 0x4, MOUSEEVENTF_WHEEL = 0x800, MOUSEEVENTF_HWHEEL = 0x1000;
+  const uint MOUSEEVENTF_LEFTDOWN = 0x2, MOUSEEVENTF_LEFTUP = 0x4, MOUSEEVENTF_RIGHTDOWN = 0x8, MOUSEEVENTF_RIGHTUP = 0x10;
+  const uint MOUSEEVENTF_MIDDLEDOWN = 0x20, MOUSEEVENTF_MIDDLEUP = 0x40, MOUSEEVENTF_WHEEL = 0x800, MOUSEEVENTF_HWHEEL = 0x1000;
 
   // Use physical pixels so coordinates match screen_snapshot images on scaled displays.
   public static void UsePhysicalPixels() {
@@ -136,10 +137,20 @@ public static class JarvisInput {
     return true;
   }
 
-  public static void Click(int x, int y) {
+  // button: 0 = left, 1 = right, 2 = middle. Pauses let the target see the hover before the press
+  // (Chromium can drop a click that lands with the move) while keeping double clicks within the double-click time.
+  public static void Click(int x, int y, int button, int count) {
     UsePhysicalPixels();
     if (!SetCursorPos(x, y)) throw new Win32Exception(Marshal.GetLastWin32Error());
-    Send(Mouse(MOUSEEVENTF_LEFTDOWN, 0), Mouse(MOUSEEVENTF_LEFTUP, 0));
+    uint down = button == 1 ? MOUSEEVENTF_RIGHTDOWN : button == 2 ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_LEFTDOWN;
+    uint up = button == 1 ? MOUSEEVENTF_RIGHTUP : button == 2 ? MOUSEEVENTF_MIDDLEUP : MOUSEEVENTF_LEFTUP;
+    Thread.Sleep(50);
+    for (int i = 0; i < count; i++) {
+      if (i > 0) Thread.Sleep(60);
+      Send(Mouse(down, 0));
+      Thread.Sleep(20);
+      Send(Mouse(up, 0));
+    }
   }
 
   public static void Scroll(int delta, bool horizontal) {
@@ -234,23 +245,31 @@ async function pressKey(key, repeat) {
   await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::PressKey(${vk}, ${Math.trunc(repeat)})`);
 }
 
+const MOUSE_BUTTONS = { left: 0, right: 1, middle: 2 };
+
+function clickScript(x, y, options = {}) {
+  const button = MOUSE_BUTTONS[options.button] ?? 0;
+  const count = options.clicks === 2 ? 2 : 1;
+  return `${addType(INPUT_HELPER)}\n[JarvisInput]::Click(${x}, ${y}, ${button}, ${count})`;
+}
+
 // x/y are pixel coordinates in the last screen_snapshot image sent to the model.
-async function click(x, y) {
+async function click(x, y, options) {
   if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("x and y must be numbers.");
   if (!snapshotGeometry) throw new Error("Take a screen_snapshot first; click coordinates are read from that image.");
   const { width, height, scaleX, scaleY } = snapshotGeometry;
   if (x < 0 || y < 0 || x > width || y > height) {
     throw new Error(`(${x}, ${y}) is outside the ${width}x${height} snapshot. Use coordinates from the snapshot image.`);
   }
-  await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::Click(${Math.round(x * scaleX)}, ${Math.round(y * scaleY)})`);
+  await runPowerShell(clickScript(Math.round(x * scaleX), Math.round(y * scaleY), options));
 }
 
-async function clickElement(id) {
+async function clickElement(id, options) {
   const element = uiElements.get(Math.trunc(Number(id)));
   if (!element) throw new Error(`No element #${id}. Call ui_elements again; the list resets after each call.`);
   const x = Math.round(element.x + element.w / 2);
   const y = Math.round(element.y + element.h / 2);
-  await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::Click(${x}, ${y})`);
+  await runPowerShell(clickScript(x, y, options));
   return element;
 }
 

@@ -333,6 +333,8 @@ const toolSpecs = [
       properties: {
         x: { type: "number" },
         y: { type: "number" },
+        button: { type: "string", enum: ["left", "right", "middle"], description: "Defaults to left. Windows only." },
+        clicks: { type: "number", enum: [1, 2], description: "2 for a double click. Windows only." },
         confirmed: { type: "boolean" },
         risk: { type: "string", enum: ["low", "may_send_or_modify", "private_or_sensitive"] },
       },
@@ -348,6 +350,8 @@ const toolSpecs = [
       type: "object",
       properties: {
         id: { type: "number", description: "Element number from the latest ui_elements list." },
+        button: { type: "string", enum: ["left", "right", "middle"], description: "Defaults to left. Windows only." },
+        clicks: { type: "number", enum: [1, 2], description: "2 for a double click. Windows only." },
         confirmed: { type: "boolean" },
         risk: { type: "string", enum: ["low", "may_send_or_modify", "private_or_sensitive"] },
       },
@@ -853,7 +857,7 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
         return { ok: false, requiresConfirmation: true, message: "Confirmation required before clicking a risky target." };
       }
       if (isWindows) {
-        await windowsComputer.click(Number(args.x), Number(args.y));
+        await windowsComputer.click(Number(args.x), Number(args.y), { button: args.button, clicks: args.clicks });
       } else {
         await execFileAsync("osascript", ["-e", `tell application "System Events" to click at {${Number(args.x)}, ${Number(args.y)}}`]);
       }
@@ -865,7 +869,7 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
       if (requiresConfirmation(args)) {
         return { ok: false, requiresConfirmation: true, message: "Confirmation required before clicking a risky target." };
       }
-      const element = await windowsComputer.clickElement(args.id);
+      const element = await windowsComputer.clickElement(args.id, { button: args.button, clicks: args.clicks });
       return { ok: true, message: `Clicked #${args.id} ${element.type} "${element.name || ""}".` };
     }
 
