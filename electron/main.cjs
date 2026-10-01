@@ -5,10 +5,12 @@ const path = require("node:path");
 const fs = require("node:fs/promises");
 const crypto = require("node:crypto");
 const dotenv = require("dotenv");
+const windowsComputer = require("./computer-windows.cjs");
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 
 const execFileAsync = promisify(execFile);
+const isWindows = process.platform === "win32";
 const dataDir = path.join(process.cwd(), "data");
 const dbPath = path.join(dataDir, "ricky-db.json");
 let currentMode = "display";
@@ -270,7 +272,7 @@ const toolSpecs = [
   {
     type: "function",
     name: "computer_open_app",
-    description: "Open a macOS app by name. Requires computer mode.",
+    description: "Open an app by name (on Windows: an executable, Start menu app name, or path). Requires computer mode.",
     parameters: {
       type: "object",
       properties: {
@@ -352,7 +354,7 @@ const toolSpecs = [
   {
     type: "function",
     name: "ui_inspect",
-    description: "Inspect the frontmost macOS app name, window, and visible UI summary using Accessibility when available. Requires computer mode.",
+    description: "Inspect the frontmost app name, window, and visible UI summary using Accessibility (macOS) or UI Automation (Windows) when available. Requires computer mode.",
     parameters: {
       type: "object",
       properties: {},
@@ -767,15 +769,26 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
     if (name.startsWith("computer_") || name === "screen_snapshot" || name === "ui_inspect") {
       const blocked = requireComputerMode();
       if (blocked) return blocked;
+      if (process.platform !== "darwin" && !isWindows) {
+        return { ok: false, error: `Computer control is not supported on ${process.platform}.` };
+      }
     }
 
     if (name === "computer_open_app") {
+      if (isWindows) {
+        const opened = await windowsComputer.openApp(String(args.appName || ""));
+        return { ok: true, message: `Opened ${opened || args.appName}.` };
+      }
       await execFileAsync("open", ["-a", String(args.appName || "")]);
       return { ok: true, message: `Opened ${args.appName}.` };
     }
 
     if (name === "computer_type_text") {
-      await execFileAsync("osascript", ["-e", `tell application "System Events" to keystroke ${appleScriptString(args.text || "")}`]);
+      if (isWindows) {
+        await windowsComputer.typeText(String(args.text || ""));
+      } else {
+        await execFileAsync("osascript", ["-e", `tell application "System Events" to keystroke ${appleScriptString(args.text || "")}`]);
+      }
       return { ok: true, message: "Typed text into the active app." };
     }
 
@@ -785,7 +798,11 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
         return { ok: false, error: `Unsupported key: ${args.key}` };
       }
       const repeat = Math.max(1, Math.min(20, Number(args.repeat || 1)));
-      await execFileAsync("osascript", ["-e", `tell application "System Events" to repeat ${repeat} times\nkey code ${keyCode}\nend repeat`]);
+      if (isWindows) {
+        await windowsComputer.pressKey(args.key, repeat);
+      } else {
+        await execFileAsync("osascript", ["-e", `tell application "System Events" to repeat ${repeat} times\nkey code ${keyCode}\nend repeat`]);
+      }
       return { ok: true, message: `Pressed ${args.key}.` };
     }
 
@@ -793,13 +810,21 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
       if (requiresConfirmation(args)) {
         return { ok: false, requiresConfirmation: true, message: "Confirmation required before clicking a risky target." };
       }
-      await execFileAsync("osascript", ["-e", `tell application "System Events" to click at {${Number(args.x)}, ${Number(args.y)}}`]);
+      if (isWindows) {
+        await windowsComputer.click(Number(args.x), Number(args.y));
+      } else {
+        await execFileAsync("osascript", ["-e", `tell application "System Events" to click at {${Number(args.x)}, ${Number(args.y)}}`]);
+      }
       return { ok: true, message: `Clicked ${args.x}, ${args.y}.` };
     }
 
     if (name === "computer_scroll") {
       const direction = String(args.direction || "down");
       const amount = Math.max(1, Math.min(20, Number(args.amount || 4)));
+      if (isWindows) {
+        await windowsComputer.scroll(direction, amount);
+        return { ok: true, message: `Scrolled ${direction}.` };
+      }
       const keyByDirection = { up: 126, down: 125, left: 123, right: 124 };
       const keyCode = keyByDirection[direction] || 125;
       await execFileAsync("osascript", ["-e", `tell application "System Events" to repeat ${amount} times\nkey code ${keyCode}\nend repeat`]);
@@ -809,14 +834,33 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
     if (name === "screen_snapshot") {
       await fs.mkdir(dataDir, { recursive: true });
       const screenshotPath = path.join(dataDir, `screenshot-${Date.now()}.png`);
-      await execFileAsync("screencapture", ["-x", screenshotPath]);
+      // On Windows, file:// + a drive path doesn't load in the artifact panel, so show a data URL instead.
+      let imageContent = screenshotPath;
+      if (isWindows) {
+        imageContent = await windowsComputer.captureScreen(screenshotPath);
+      } else {
+        await execFileAsync("screencapture", ["-x", screenshotPath]);
+      }
       return {
         ok: true,
         path: screenshotPath,
         artifact: {
           title: "Screen Snapshot",
           kind: "image",
-          content: screenshotPath,
+          content: imageContent,
+        },
+      };
+    }
+
+    if (name === "ui_inspect" && isWindows) {
+      const summary = await windowsComputer.inspectUi();
+      return {
+        ok: true,
+        summary,
+        artifact: {
+          title: "UI Inspect",
+          kind: "text",
+          content: summary,
         },
       };
     }

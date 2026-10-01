@@ -1,6 +1,6 @@
 # RileyJarvis
 
-RileyJarvis is a local Electron desktop AI companion with realtime voice, a visual artifact panel, image generation, web search, notes, and opt-in macOS computer control.
+RileyJarvis is a local Electron desktop AI companion with realtime voice, a visual artifact panel, image generation, web search, notes, and opt-in computer control on macOS and Windows.
 
 It is built with Electron, React, Vite, TypeScript, and the OpenAI Realtime API.
 
@@ -12,11 +12,11 @@ It is built with Electron, React, Vite, TypeScript, and the OpenAI Realtime API.
 - YouTube thumbnail board with persistent numbered generations and image edits.
 - Optional Exa-powered web search.
 - Local notes and records stored at runtime under `data/`.
-- Optional computer-use mode for opening apps, clicking, typing, scrolling, screenshots, and UI inspection on macOS.
+- Optional computer-use mode for opening apps, clicking, typing, scrolling, screenshots, and UI inspection on macOS and Windows.
 
 ## Requirements
 
-- macOS
+- macOS or Windows 10/11
 - Node.js 20+
 - npm
 - An OpenAI API key with Realtime and image generation access
@@ -48,6 +48,10 @@ RileyJarvis runs locally. Depending on the features you use, macOS may ask for:
 - Microphone permission for voice conversation.
 - Accessibility permission for computer-control tools.
 - Screen Recording permission for screenshots and screen inspection.
+
+## Windows Notes
+
+On Windows, computer-control tools use PowerShell with Win32 input (`SendInput`) and UI Automation, and screenshots use Electron's `desktopCapturer`. No extra permissions are needed, but Windows blocks input into apps running as administrator unless RileyJarvis is also elevated. Click coordinates are physical pixels on the primary display, matching `screen_snapshot` images.
 
 Computer-control tools are blocked until the app is in computer-use mode.
 
