@@ -280,6 +280,7 @@ export class JarvisRealtimeClient {
       if (result.thumbnailReady === true) this.callbacks.onThumbnailReady();
       if (result.silent !== true) shouldCreateResponse = true;
       await this.returnToolOutput(callId, result);
+      if (typeof result.modelImage === "string") this.sendImage(result.modelImage);
     }
 
     if (shouldCreateResponse) this.sendEvent({ type: "response.create" });
@@ -297,10 +298,36 @@ export class JarvisRealtimeClient {
     });
   }
 
-  private sendEvent(event: Record<string, unknown>): void {
-    if (this.dc?.readyState === "open") {
-      this.dc.send(JSON.stringify(event));
+  // Screenshots go in as a user image item so the model can actually see the screen.
+  private sendImage(dataUrl: string): void {
+    const sent = this.sendEvent({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_image", image_url: dataUrl }],
+      },
+    });
+    if (!sent) {
+      this.callbacks.onStatus("Screenshot was too large to send to Jarvis.");
+      this.sendEvent({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "The screenshot could not be attached. Do not click based on it." }],
+        },
+      });
     }
+  }
+
+  private sendEvent(event: Record<string, unknown>): boolean {
+    if (this.dc?.readyState !== "open") return false;
+    const payload = JSON.stringify(event);
+    const maxMessageSize = this.pc?.sctp?.maxMessageSize;
+    if (maxMessageSize && payload.length > maxMessageSize) return false;
+    this.dc.send(payload);
+    return true;
   }
 
   private startOutputMeter(stream: MediaStream): void {
@@ -423,9 +450,10 @@ function parseToolArguments(raw: string): Record<string, unknown> {
 }
 
 function sanitizeToolResult(result: JarvisToolResult): JarvisToolResult {
-  if (!result.artifact) return result;
+  const { modelImage: _modelImage, ...withoutImage } = result;
+  if (!withoutImage.artifact) return withoutImage;
 
-  const { artifact, ...rest } = result;
+  const { artifact, ...rest } = withoutImage;
   return {
     ...rest,
     artifact: {

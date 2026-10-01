@@ -45,6 +45,12 @@ Speak Brazilian Portuguese (pt-BR) by default. Always reply in the language Luis
 - Typing text and pressing Enter/Return in computer use mode are allowed without extra approval when Luis asks you to type or send a prompt. Ask first before clicking controls or taking actions that delete, purchase, change settings, or expose private information.
 - Explain what you are doing in one short sentence before longer tool work. Do not over-explain.
 
+# Computer Use
+- Never guess where something is on screen. Call screen_snapshot and look at the image before clicking.
+- computer_click coordinates come from the most recent snapshot image. Aim for the center of the target.
+- The screen changes after clicking, scrolling, typing, or opening apps: take a new snapshot before the next click, and after a click to confirm it worked.
+- If a click missed, look at the new snapshot and correct the coordinates instead of repeating the same ones.
+
 # Artifacts
 Use artifacts for menus, web results, graphics, notes, database tables, code snippets, and task progress. If the user asks to show, hide, or fullscreen the artifacts panel, call the artifact tool.
 For Mermaid charts, keep syntax simple: start with flowchart TD, avoid markdown fences, avoid parentheses in node labels, and use short alphanumeric node IDs.
@@ -319,7 +325,7 @@ const toolSpecs = [
   {
     type: "function",
     name: "computer_click",
-    description: "Click screen coordinates. Requires computer mode. Ask for confirmation before clicking buttons that send, delete, buy, submit, or change settings.",
+    description: "Click a point on screen. On Windows, x/y are pixel coordinates in the most recent screen_snapshot image. Requires computer mode. Ask for confirmation before clicking buttons that send, delete, buy, submit, or change settings.",
     parameters: {
       type: "object",
       properties: {
@@ -349,7 +355,7 @@ const toolSpecs = [
   {
     type: "function",
     name: "screen_snapshot",
-    description: "Capture the current screen and return the local screenshot path. Requires computer mode.",
+    description: "Capture the current screen. On Windows the screenshot is attached to the conversation so you can see it. Requires computer mode.",
     parameters: {
       type: "object",
       properties: {},
@@ -843,13 +849,25 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
     if (name === "screen_snapshot") {
       await fs.mkdir(dataDir, { recursive: true });
       const screenshotPath = path.join(dataDir, `screenshot-${Date.now()}.png`);
-      // On Windows, file:// + a drive path doesn't load in the artifact panel, so show a data URL instead.
-      let imageContent = screenshotPath;
       if (isWindows) {
-        imageContent = await windowsComputer.captureScreen(screenshotPath);
-      } else {
-        await execFileAsync("screencapture", ["-x", screenshotPath]);
+        // file:// + a drive path doesn't load in the artifact panel, so show a data URL instead.
+        const snapshot = await windowsComputer.captureScreen(screenshotPath);
+        return {
+          ok: true,
+          path: screenshotPath,
+          imageWidth: snapshot.width,
+          imageHeight: snapshot.height,
+          message: `The screenshot (${snapshot.width}x${snapshot.height}) is attached as the next message. computer_click x/y are pixel coordinates in this image.`,
+          modelImage: snapshot.modelImage,
+          artifact: {
+            title: "Screen Snapshot",
+            kind: "image",
+            content: snapshot.displayUrl,
+          },
+        };
       }
+      await execFileAsync("screencapture", ["-x", screenshotPath]);
+      const imageContent = screenshotPath;
       return {
         ok: true,
         path: screenshotPath,

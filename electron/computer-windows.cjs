@@ -8,6 +8,12 @@ const fs = require("node:fs/promises");
 
 const execFileAsync = promisify(execFile);
 
+// The model sees a downscaled JPEG of the screen; clicks arrive in that image's pixel space.
+// Realtime vision downsamples large images anyway, and the data channel caps message size.
+const MODEL_IMAGE_MAX_SIDE = 1280;
+const MODEL_IMAGE_MAX_BYTES = 180000;
+let snapshotGeometry = null;
+
 const INPUT_HELPER = `
 using System;
 using System.ComponentModel;
@@ -225,9 +231,15 @@ async function pressKey(key, repeat) {
   await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::PressKey(${vk}, ${Math.trunc(repeat)})`);
 }
 
+// x/y are pixel coordinates in the last screen_snapshot image sent to the model.
 async function click(x, y) {
   if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("x and y must be numbers.");
-  await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::Click(${Math.round(x)}, ${Math.round(y)})`);
+  if (!snapshotGeometry) throw new Error("Take a screen_snapshot first; click coordinates are read from that image.");
+  const { width, height, scaleX, scaleY } = snapshotGeometry;
+  if (x < 0 || y < 0 || x > width || y > height) {
+    throw new Error(`(${x}, ${y}) is outside the ${width}x${height} snapshot. Use coordinates from the snapshot image.`);
+  }
+  await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::Click(${Math.round(x * scaleX)}, ${Math.round(y * scaleY)})`);
 }
 
 async function scroll(direction, amount) {
@@ -237,7 +249,8 @@ async function scroll(direction, amount) {
   await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::Scroll(${delta}, $${horizontal})`);
 }
 
-// Captures the primary display at physical resolution, writes a PNG, and returns a data URL for the artifact panel.
+// Captures the primary display at physical resolution and writes a PNG. Returns a full-size data URL
+// for the artifact panel and a smaller JPEG for the model, whose geometry click() maps back from.
 async function captureScreen(screenshotPath) {
   const display = screen.getPrimaryDisplay();
   const thumbnailSize = {
@@ -247,8 +260,26 @@ async function captureScreen(screenshotPath) {
   const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize });
   const source = sources.find((item) => item.display_id === String(display.id)) || sources[0];
   if (!source || source.thumbnail.isEmpty()) throw new Error("Screen capture returned no image.");
-  await fs.writeFile(screenshotPath, source.thumbnail.toPNG());
-  return source.thumbnail.toDataURL();
+  const image = source.thumbnail;
+  await fs.writeFile(screenshotPath, image.toPNG());
+
+  const physical = image.getSize();
+  const ratio = Math.min(1, MODEL_IMAGE_MAX_SIDE / Math.max(physical.width, physical.height));
+  const width = Math.round(physical.width * ratio);
+  const height = Math.round(physical.height * ratio);
+  const resized = ratio < 1 ? image.resize({ width, height, quality: "best" }) : image;
+  let jpeg = resized.toJPEG(80);
+  for (const quality of [65, 50, 35]) {
+    if (jpeg.length <= MODEL_IMAGE_MAX_BYTES) break;
+    jpeg = resized.toJPEG(quality);
+  }
+  snapshotGeometry = { width, height, scaleX: physical.width / width, scaleY: physical.height / height };
+  return {
+    displayUrl: image.toDataURL(),
+    modelImage: `data:image/jpeg;base64,${jpeg.toString("base64")}`,
+    width,
+    height,
+  };
 }
 
 async function inspectUi() {
