@@ -15,6 +15,8 @@ const dataDir = path.join(process.cwd(), "data");
 const dbPath = path.join(dataDir, "jarvis-db.json");
 // Pre-rename name of the database; migrated to dbPath on first run.
 const legacyDbPath = path.join(dataDir, "ricky-db.json");
+// Validation-only conversation log (JARVIS_DEBUG_LOG=1 in .env.local). Grows without bound; turn off when done.
+const debugLogEnabled = process.env.JARVIS_DEBUG_LOG === "1";
 let currentMode = "display";
 let mainWindow = null;
 let normalWindowBounds = null;
@@ -602,6 +604,15 @@ function setWindowMode(mode) {
 }
 
 ipcMain.handle("tools:list", () => toolSpecs);
+
+// One JSON line per transcript, tool call, tool result, or error, in data/jarvis-log-YYYY-MM-DD.jsonl.
+ipcMain.on("debug:log", (_event, entry) => {
+  if (!debugLogEnabled) return;
+  const now = new Date();
+  const line = JSON.stringify({ at: now.toISOString(), mode: currentMode, ...asObject(entry) });
+  const logPath = path.join(dataDir, `jarvis-log-${now.toISOString().slice(0, 10)}.jsonl`);
+  fs.appendFile(logPath, `${line}\n`).catch((error) => console.error("Failed to write debug log:", error));
+});
 
 ipcMain.handle("realtime:create-token", async () => {
   const apiKey = process.env.OPENAI_API_KEY;

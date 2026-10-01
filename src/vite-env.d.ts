@@ -45,6 +45,7 @@ declare global {
       createRealtimeToken: () => Promise<{ value: string; expiresAt: number | null }>;
       executeTool: (toolCall: JarvisToolCall) => Promise<JarvisToolResult>;
       getToolSpecs: () => Promise<JarvisToolSpec[]>;
+      log: (entry: Record<string, unknown>) => void;
     };
   }
 }

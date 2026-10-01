@@ -160,6 +160,7 @@ export class JarvisRealtimeClient {
       return;
     }
     this.callbacks.onTranscript(newEntry("user", text));
+    debugLog({ kind: "user_text", text });
     this.sendEvent({
       type: "conversation.item.create",
       item: {
@@ -176,6 +177,7 @@ export class JarvisRealtimeClient {
     if (!event.type) return;
 
     if (event.type === "error") {
+      debugLog({ kind: "error", message: event.error?.message });
       this.callbacks.onMood("error");
       this.callbacks.onStatus(event.error?.message || "Realtime API returned an error.");
       return;
@@ -212,14 +214,20 @@ export class JarvisRealtimeClient {
 
     if (event.type === "conversation.item.input_audio_transcription.completed") {
       const transcript = event.transcript || collectItemText(event.item);
-      if (transcript) this.callbacks.onTranscript(newEntry("user", transcript));
+      if (transcript) {
+        this.callbacks.onTranscript(newEntry("user", transcript));
+        debugLog({ kind: "user_speech", text: transcript });
+      }
       return;
     }
 
     if (event.type === "response.done") {
       const output = event.response?.output || [];
       const spoken = this.currentAssistantText || output.map(collectOutputText).filter(Boolean).join("\n");
-      if (spoken) this.callbacks.onTranscript(newEntry("jarvis", spoken));
+      if (spoken) {
+        this.callbacks.onTranscript(newEntry("jarvis", spoken));
+        debugLog({ kind: "jarvis", text: spoken });
+      }
       this.currentAssistantText = "";
 
       const functionCalls = output.filter((item) => item.type === "function_call" && item.name && item.call_id);
@@ -253,6 +261,7 @@ export class JarvisRealtimeClient {
       }
 
       this.callbacks.onTranscript(newEntry("tool", `Running ${name}`));
+      debugLog({ kind: "tool_call", name, arguments: parsedArgs });
       if (name === "image_generate") {
         this.callbacks.onArtifact({
           title: "Generating Image",
@@ -280,6 +289,7 @@ export class JarvisRealtimeClient {
       if (result.thumbnailReady === true) this.callbacks.onThumbnailReady();
       if (result.silent !== true) shouldCreateResponse = true;
       await this.returnToolOutput(callId, result);
+      debugLog({ kind: "tool_result", name, result: truncate(JSON.stringify(sanitizeToolResult(result)), 4000) });
       if (typeof result.modelImage === "string") this.sendImage(result.modelImage);
     }
 
@@ -430,6 +440,15 @@ export function newEntry(role: TranscriptEntry["role"], text: string): Transcrip
     text,
     at: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
   };
+}
+
+// Sends a line to the main process's validation log; a no-op there unless JARVIS_DEBUG_LOG=1.
+function debugLog(entry: Record<string, unknown>): void {
+  window.jarvis.log(entry);
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}...` : text;
 }
 
 function safeParseEvent(raw: string): ServerEvent {
