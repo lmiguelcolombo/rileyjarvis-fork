@@ -117,7 +117,7 @@ export function ArtifactPanel({ artifact, visible, fullscreen, onToggleVisible, 
 function EmptyArtifact() {
   return (
     <div className="empty-artifact">
-      <p>Ask Ricky to show web results, charts, notes, records, code, images, or progress here.</p>
+      <p>Ask Jarvis to show web results, charts, notes, records, code, images, or progress here.</p>
     </div>
   );
 }
@@ -137,7 +137,7 @@ function renderArtifact(artifact: RickyArtifact, mermaidState: MermaidState) {
         <div className="mermaid-output" dangerouslySetInnerHTML={{ __html: mermaidState.svg }} />
         {mermaidState.error ? (
           <details className="mermaid-repair">
-            <summary>Ricky repaired this chart so it would still display.</summary>
+            <summary>Jarvis repaired this chart so it would still display.</summary>
             <p>The original Mermaid syntax did not parse, so a safe fallback chart was shown.</p>
             <pre>{mermaidState.source}</pre>
           </details>
@@ -226,7 +226,7 @@ function ThumbnailBoard({ content }: { content: string }) {
       <header className="thumbnail-board-meta">
         <div>
           <span>{page.totalImages ?? images.length} thumbnails</span>
-          <p>{(board.references || []).length} Riley reference image{(board.references || []).length === 1 ? "" : "s"} loaded</p>
+          <p>{(board.references || []).length} Luis reference image{(board.references || []).length === 1 ? "" : "s"} loaded</p>
         </div>
         <small>Page {page.page || 1}/{page.totalPages || 1} · next #{page.nextNumber || "?"}</small>
       </header>
@@ -251,7 +251,7 @@ function ThumbnailBoard({ content }: { content: string }) {
         </div>
       ) : (
         <div className="thumbnail-empty">
-          <p>Riley reference image loaded. Ask Ricky: “Generate a 16:9 thumbnail of me about Cursor agents.”</p>
+          <p>Luis reference image loaded. Ask Jarvis: “Generate a 16:9 thumbnail of me about Cursor agents.”</p>
         </div>
       )}
     </section>

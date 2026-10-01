@@ -18,7 +18,7 @@ export function RickyFace({ mood, mouthShape }: RickyFaceProps) {
           "--mouth-teeth": mouthShape.teeth.toFixed(3),
         } as CSSProperties
       }
-      aria-label={`Ricky mood: ${mood}`}
+      aria-label={`Jarvis mood: ${mood}`}
     >
       <div className="eye-row">
         <div className="eye">

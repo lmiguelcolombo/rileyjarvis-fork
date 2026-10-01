@@ -18,7 +18,7 @@ export default function App() {
   const [showTypeInput, setShowTypeInput] = useState(false);
   const [mouthShape, setMouthShape] = useState<MouthShape>({ open: 0, width: 0.18, round: 0, teeth: 0 });
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([
-    newEntry("system", "Ricky is ready. Connect voice, then talk naturally."),
+    newEntry("system", "Jarvis is ready. Connect voice, then talk naturally."),
   ]);
   const [status, setStatus] = useState("Idle");
   const [textPrompt, setTextPrompt] = useState("");
@@ -90,13 +90,13 @@ export default function App() {
   if (mode === "computer") {
     return (
       <main className="app-shell app-shell-mini">
-        <section className="mini-companion" aria-label="Ricky computer use mini mode">
+        <section className="mini-companion" aria-label="Jarvis computer use mini mode">
           <RickyFace mood={mood} mouthShape={mouthShape} />
           <button
             className="mini-restore-button"
             onClick={() => void switchMode("display")}
-            aria-label="Return to full Ricky window"
-            title="Return to full Ricky window"
+            aria-label="Return to full Jarvis window"
+            title="Return to full Jarvis window"
           >
             <Expand size={14} />
           </button>
@@ -124,7 +124,7 @@ export default function App() {
                   if (event.key === "Enter") sendTextPrompt();
                 }}
                 autoFocus
-                placeholder="Type to Ricky..."
+                placeholder="Type to Jarvis..."
               />
               <button onClick={sendTextPrompt} aria-label="Send typed prompt" title="Send typed prompt">
                 <Send size={15} />
@@ -145,8 +145,8 @@ export default function App() {
             <button
               className={showTypeInput ? "simple-button active" : "simple-button"}
               onClick={() => setShowTypeInput((value) => !value)}
-              aria-label="Type to Ricky"
-              title="Type to Ricky"
+              aria-label="Type to Jarvis"
+              title="Type to Jarvis"
             >
               <Keyboard size={16} />
             </button>
@@ -195,7 +195,7 @@ export default function App() {
               {transcript.map((entry) => (
                 <article className={`entry entry-${entry.role}`} key={entry.id}>
                   <div>
-                    <strong>{entry.role === "ricky" ? "Ricky" : entry.role}</strong>
+                    <strong>{entry.role === "ricky" ? "Jarvis" : entry.role}</strong>
                     <time>{entry.at}</time>
                   </div>
                   <p>{entry.text}</p>

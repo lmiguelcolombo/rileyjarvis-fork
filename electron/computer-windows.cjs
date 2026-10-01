@@ -1,4 +1,4 @@
-// Windows implementations of Ricky's computer-use tools.
+// Windows implementations of Jarvis's computer-use tools.
 // Input and UI inspection go through PowerShell + Win32 (no native Node modules);
 // screenshots use Electron's desktopCapturer.
 const { desktopCapturer, screen } = require("electron");
