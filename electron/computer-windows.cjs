@@ -13,6 +13,9 @@ const execFileAsync = promisify(execFile);
 const MODEL_IMAGE_MAX_SIDE = 1280;
 const MODEL_IMAGE_MAX_BYTES = 180000;
 let snapshotGeometry = null;
+// Element boxes from the last listUiElements() call, in physical pixels, keyed by the id shown to the model.
+let uiElements = new Map();
+const MAX_UI_ELEMENTS = 150;
 
 const INPUT_HELPER = `
 using System;
@@ -242,6 +245,15 @@ async function click(x, y) {
   await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::Click(${Math.round(x * scaleX)}, ${Math.round(y * scaleY)})`);
 }
 
+async function clickElement(id) {
+  const element = uiElements.get(Math.trunc(Number(id)));
+  if (!element) throw new Error(`No element #${id}. Call ui_elements again; the list resets after each call.`);
+  const x = Math.round(element.x + element.w / 2);
+  const y = Math.round(element.y + element.h / 2);
+  await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::Click(${x}, ${y})`);
+  return element;
+}
+
 async function scroll(direction, amount) {
   const horizontal = direction === "left" || direction === "right";
   const sign = direction === "up" || direction === "right" ? 1 : -1;
@@ -303,4 +315,63 @@ Write-Output ("Window: " + $title.ToString())
 Write-Output ("Role: " + $role)`);
 }
 
-module.exports = { openApp, typeText, pressKey, click, scroll, captureScreen, inspectUi };
+// Lists the foreground window's on-screen interactive elements with their exact bounding boxes via
+// UI Automation, so clicks can target an element instead of a pixel estimated from a screenshot.
+async function listUiElements() {
+  const output = await runPowerShell(`${addType(INPUT_HELPER)}
+${addType(WINDOW_HELPER)}
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+[JarvisInput]::UsePhysicalPixels()
+$A = [System.Windows.Automation.AutomationElement]
+$CT = [System.Windows.Automation.ControlType]
+$hwnd = [JarvisWindow]::GetForegroundWindow()
+$title = New-Object System.Text.StringBuilder 512
+[void][JarvisWindow]::GetWindowText($hwnd, $title, $title.Capacity)
+$root = $A::FromHandle($hwnd)
+$types = @($CT::Button, $CT::SplitButton, $CT::Edit, $CT::ComboBox, $CT::Hyperlink, $CT::MenuItem, $CT::TabItem,
+  $CT::CheckBox, $CT::RadioButton, $CT::ListItem, $CT::TreeItem, $CT::DataItem)
+$typeConditions = [System.Windows.Automation.Condition[]]@($types | ForEach-Object {
+  [System.Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty, $_) })
+$condition = [System.Windows.Automation.AndCondition]::new(
+  [System.Windows.Automation.OrCondition]::new($typeConditions),
+  [System.Windows.Automation.PropertyCondition]::new($A::IsOffscreenProperty, $false))
+$cache = New-Object System.Windows.Automation.CacheRequest
+$cache.AutomationElementMode = [System.Windows.Automation.AutomationElementMode]::None
+$cache.Add($A::NameProperty)
+$cache.Add($A::ControlTypeProperty)
+$cache.Add($A::BoundingRectangleProperty)
+$cache.Add($A::IsEnabledProperty)
+$cache.Push()
+try { $found = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) } finally { $cache.Pop() }
+$items = foreach ($element in $found) {
+  $info = $element.Cached
+  $rect = $info.BoundingRectangle
+  if ($rect.IsEmpty -or $rect.Width -lt 2 -or $rect.Height -lt 2) { continue }
+  [pscustomobject]@{
+    type = $info.ControlType.ProgrammaticName -replace '^ControlType\\.', ''
+    name = $info.Name
+    enabled = $info.IsEnabled
+    x = [int]$rect.X; y = [int]$rect.Y; w = [int]$rect.Width; h = [int]$rect.Height
+  }
+}
+ConvertTo-Json -Compress -Depth 3 -InputObject ([pscustomobject]@{ window = $title.ToString(); elements = @($items) })`);
+
+  const result = JSON.parse(output || "{}");
+  const elements = (Array.isArray(result.elements) ? result.elements : [])
+    // Nameless elements are only useful when they are input fields.
+    .filter((element) => String(element.name || "").trim() || element.type === "Edit" || element.type === "ComboBox")
+    .sort((a, b) => a.y - b.y || a.x - b.x)
+    .slice(0, MAX_UI_ELEMENTS);
+  uiElements = new Map(elements.map((element, index) => [index + 1, element]));
+
+  const lines = elements.map((element, index) => {
+    const name = String(element.name || "").replace(/\s+/g, " ").trim().slice(0, 80);
+    const center = snapshotGeometry
+      ? ` at (${Math.round((element.x + element.w / 2) / snapshotGeometry.scaleX)}, ${Math.round((element.y + element.h / 2) / snapshotGeometry.scaleY)})`
+      : "";
+    return `[${index + 1}] ${element.type}${name ? ` "${name}"` : ""}${center}${element.enabled === false ? " (disabled)" : ""}`;
+  });
+  return { window: String(result.window || ""), count: elements.length, list: lines.join("\n") };
+}
+
+module.exports = { openApp, typeText, pressKey, click, clickElement, scroll, captureScreen, inspectUi, listUiElements };

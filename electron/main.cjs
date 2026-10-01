@@ -47,7 +47,9 @@ Speak Brazilian Portuguese (pt-BR) by default. Always reply in the language Luis
 
 # Computer Use
 - Never guess where something is on screen. Call screen_snapshot and look at the image before clicking.
-- computer_click coordinates come from the most recent snapshot image. Aim for the center of the target.
+- To click, prefer ui_elements then computer_click_element: it uses the app's exact element positions. Match the element by name, type, and position in the snapshot.
+- Fall back to computer_click only when the target is not in the ui_elements list (images, canvases, some web content). Its coordinates come from the most recent snapshot image. Aim for the center of the target.
+- Element numbers are only valid until the next ui_elements call; list again after the screen changes.
 - The screen changes after clicking, scrolling, typing, or opening apps: take a new snapshot before the next click, and after a click to confirm it worked.
 - If a click missed, look at the new snapshot and correct the coordinates instead of repeating the same ones.
 
@@ -340,6 +342,21 @@ const toolSpecs = [
   },
   {
     type: "function",
+    name: "computer_click_element",
+    description: "Click the center of an element listed by ui_elements, using its exact on-screen position. Windows only. Requires computer mode. Ask for confirmation before clicking buttons that send, delete, buy, submit, or change settings.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "number", description: "Element number from the latest ui_elements list." },
+        confirmed: { type: "boolean" },
+        risk: { type: "string", enum: ["low", "may_send_or_modify", "private_or_sensitive"] },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
     name: "computer_scroll",
     description: "Scroll the active app. Requires computer mode.",
     parameters: {
@@ -356,6 +373,16 @@ const toolSpecs = [
     type: "function",
     name: "screen_snapshot",
     description: "Capture the current screen. On Windows the screenshot is attached to the conversation so you can see it. Requires computer mode.",
+    parameters: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "ui_elements",
+    description: "List the clickable elements (buttons, links, fields, tabs, menu items) visible in the foreground window, numbered for computer_click_element. Positions shown are in the latest screen_snapshot image. Windows only. Requires computer mode.",
     parameters: {
       type: "object",
       properties: {},
@@ -781,7 +808,7 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
       return { ok: true, deleted: before !== db.records.length, artifact: recordsArtifact(db.records, "All Records") };
     }
 
-    if (name.startsWith("computer_") || name === "screen_snapshot" || name === "ui_inspect") {
+    if (name.startsWith("computer_") || name === "screen_snapshot" || name === "ui_inspect" || name === "ui_elements") {
       const blocked = requireComputerMode();
       if (blocked) return blocked;
       if (process.platform !== "darwin" && !isWindows) {
@@ -831,6 +858,26 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
         await execFileAsync("osascript", ["-e", `tell application "System Events" to click at {${Number(args.x)}, ${Number(args.y)}}`]);
       }
       return { ok: true, message: `Clicked ${args.x}, ${args.y}.` };
+    }
+
+    if (name === "computer_click_element") {
+      if (!isWindows) return { ok: false, error: "computer_click_element is only available on Windows." };
+      if (requiresConfirmation(args)) {
+        return { ok: false, requiresConfirmation: true, message: "Confirmation required before clicking a risky target." };
+      }
+      const element = await windowsComputer.clickElement(args.id);
+      return { ok: true, message: `Clicked #${args.id} ${element.type} "${element.name || ""}".` };
+    }
+
+    if (name === "ui_elements") {
+      if (!isWindows) return { ok: false, error: "ui_elements is only available on Windows. Use ui_inspect." };
+      const { window: windowTitle, count, list } = await windowsComputer.listUiElements();
+      return {
+        ok: true,
+        window: windowTitle,
+        count,
+        elements: list || "No interactive elements found. Use screen_snapshot and computer_click instead.",
+      };
     }
 
     if (name === "computer_scroll") {
@@ -1039,7 +1086,7 @@ Here is what you can ask me to do.
 ## Computer Use Mode
 
 - "Switch to computer use mode."
-- Open apps, click, type, press Enter/Return, scroll, inspect the UI, and take screen snapshots.
+- Open apps, click (by on-screen element or by position), type, press Enter/Return, scroll, inspect the UI, and take screen snapshots.
 - Jarvis asks before risky actions like sending, deleting, buying, changing settings, or sharing private info.
 
 ## Good Starter Prompts
