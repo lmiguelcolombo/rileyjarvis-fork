@@ -640,6 +640,9 @@ ipcMain.handle("realtime:create-token", async () => {
         tools: toolSpecs,
         audio: {
           input: {
+            // Without this the session never transcribes Luis's speech: the transcript panel and the
+            // debug log only ever showed Jarvis's side. No language pin, since Luis switches pt-BR/English.
+            transcription: { model: "gpt-4o-mini-transcribe" },
             turn_detection: {
               type: "semantic_vad",
               eagerness: "medium",
