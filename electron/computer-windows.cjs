@@ -1,12 +1,11 @@
 // Windows implementations of Jarvis's computer-use tools.
-// Input and UI inspection go through PowerShell + Win32 (no native Node modules);
+// Input and UI inspection go through a long-lived PowerShell worker + Win32 (no native Node modules);
 // screenshots use Electron's desktopCapturer.
 const { desktopCapturer, screen } = require("electron");
-const { execFile } = require("node:child_process");
-const { promisify } = require("node:util");
+const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
-
-const execFileAsync = promisify(execFile);
+const os = require("node:os");
+const path = require("node:path");
 
 // The model sees a downscaled JPEG of the screen; clicks arrive in that image's pixel space.
 // Realtime vision downsamples large images anyway, and the data channel caps message size.
@@ -189,28 +188,130 @@ function addType(source) {
   return `Add-Type -TypeDefinition @'\n${source}\n'@`;
 }
 
-// User-supplied values are passed as JARVIS_* environment variables, never interpolated into the script.
-async function runPowerShell(body, env = {}, timeout = 30000) {
-  const script = `$ErrorActionPreference = 'Stop'
+// Spawning PowerShell and compiling the C# helpers took ~6s per action, long enough for the screen and the
+// conversation to move on between Jarvis's steps. The worker pays that cost once, then runs each request
+// (a base64 JSON line on stdin) in a child scope and answers with "<id> ok|error <base64 output>".
+const WORKER_SCRIPT = `$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-try {
-${body}
-} catch {
-  [Console]::Error.WriteLine($_.Exception.Message)
-  exit 1
-}`;
+${addType(INPUT_HELPER)}
+${addType(WINDOW_HELPER)}
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+[JarvisInput]::UsePhysicalPixels()
+[Console]::Out.WriteLine('READY')
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+  $request = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line)) | ConvertFrom-Json
+  $status = 'ok'
   try {
-    const { stdout } = await execFileAsync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-      { env: { ...process.env, ...env }, windowsHide: true, timeout },
-    );
-    return stdout.replace(/\r\n/g, "\n").trim();
-  } catch (error) {
-    const stderr = typeof error?.stderr === "string" ? error.stderr.trim() : "";
-    throw new Error(stderr || (error instanceof Error ? error.message : String(error)));
+    foreach ($entry in $request.env.PSObject.Properties) { Set-Item -Path ('env:' + $entry.Name) -Value $entry.Value }
+    $output = & ([scriptblock]::Create($request.script)) | Out-String
+  } catch {
+    $status = 'error'
+    $output = $_.Exception.Message
   }
+  $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([string]$output))
+  [Console]::Out.WriteLine(('{0} {1} {2}' -f $request.id, $status, $encoded))
+}`;
+const WORKER_BOOT_TIMEOUT_MS = 30000;
+
+let worker = null;
+let nextRequestId = 1;
+
+function startWorker() {
+  const pending = new Map();
+  const state = { child: null, pending, ready: null };
+  state.ready = (async () => {
+    // -EncodedCommand would overflow the command-line limit with the C# sources inlined. The BOM makes
+    // Windows PowerShell read the file as UTF-8.
+    const scriptPath = path.join(os.tmpdir(), `jarvis-worker-${process.pid}.ps1`);
+    await fs.writeFile(scriptPath, `\ufeff${WORKER_SCRIPT}`, "utf8");
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+      windowsHide: true,
+    });
+    state.child = child;
+    let stdout = "";
+    let stderr = "";
+    await new Promise((resolve, reject) => {
+      let booted = false;
+      const bootTimer = setTimeout(() => child.kill(), WORKER_BOOT_TIMEOUT_MS);
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr = (stderr + chunk).slice(-4000);
+      });
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+        let newline;
+        while ((newline = stdout.indexOf("\n")) >= 0) {
+          const line = stdout.slice(0, newline).trim();
+          stdout = stdout.slice(newline + 1);
+          if (!booted) {
+            if (line === "READY") {
+              booted = true;
+              clearTimeout(bootTimer);
+              resolve();
+            }
+            continue;
+          }
+          const [id, status, encoded = ""] = line.split(" ");
+          const request = pending.get(Number(id));
+          if (!request) continue;
+          pending.delete(Number(id));
+          clearTimeout(request.timer);
+          const output = Buffer.from(encoded, "base64").toString("utf8").replace(/\r\n/g, "\n").trim();
+          if (status === "ok") request.resolve(output);
+          else request.reject(new Error(output || "PowerShell command failed."));
+        }
+      });
+      child.on("error", reject);
+      child.on("exit", () => {
+        clearTimeout(bootTimer);
+        if (worker === state) worker = null;
+        const error = new Error(stderr.trim() || "The PowerShell worker exited.");
+        for (const request of pending.values()) {
+          clearTimeout(request.timer);
+          request.reject(error);
+        }
+        pending.clear();
+        if (!booted) reject(error);
+      });
+    });
+  })();
+  return state;
+}
+
+async function getWorker() {
+  if (!worker) worker = startWorker();
+  const current = worker;
+  try {
+    await current.ready;
+  } catch (error) {
+    if (worker === current) worker = null;
+    throw error;
+  }
+  return current;
+}
+
+// Starts the worker ahead of the first action so Jarvis's first click doesn't pay the boot time.
+function warmUp() {
+  getWorker().catch((error) => console.error("PowerShell worker failed to start:", error));
+}
+
+// User-supplied values are passed as JARVIS_* environment variables, never interpolated into the script.
+// A timed-out request kills the worker (PowerShell can't cancel a running command); the next call restarts it.
+async function runPowerShell(body, env = {}, timeout = 30000) {
+  const current = await getWorker();
+  const id = nextRequestId++;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      current.pending.delete(id);
+      reject(new Error("PowerShell command timed out."));
+      if (worker === current) worker = null;
+      current.child.kill();
+    }, timeout);
+    current.pending.set(id, { resolve, reject, timer });
+    current.child.stdin.write(`${Buffer.from(JSON.stringify({ id, script: body, env })).toString("base64")}\n`);
+  });
 }
 
 async function openApp(appName) {
@@ -218,11 +319,9 @@ async function openApp(appName) {
   if (!name) throw new Error("appName is required.");
   return runPowerShell(
     `$name = $env:JARVIS_APP_NAME
-try {
-  Start-Process -FilePath $name
-  Write-Output $name
-  exit 0
-} catch {}
+$started = $false
+try { Start-Process -FilePath $name; $started = $true } catch {}
+if ($started) { Write-Output $name; return }
 $pattern = '*' + [System.Management.Automation.WildcardPattern]::Escape($name) + '*'
 $app = Get-StartApps |
   Where-Object { $_.Name -like $pattern } |
@@ -236,13 +335,13 @@ Write-Output $app.Name`,
 }
 
 async function typeText(text) {
-  await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::TypeText($env:JARVIS_TEXT)`, { JARVIS_TEXT: text }, 30000 + text.length * 20);
+  await runPowerShell(`[JarvisInput]::TypeText($env:JARVIS_TEXT)`, { JARVIS_TEXT: text }, 30000 + text.length * 20);
 }
 
 async function pressKey(key, repeat) {
   const vk = VIRTUAL_KEYS[String(key || "").toLowerCase()];
   if (!vk) throw new Error(`Unsupported key: ${key}`);
-  await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::PressKey(${vk}, ${Math.trunc(repeat)})`);
+  await runPowerShell(`[JarvisInput]::PressKey(${vk}, ${Math.trunc(repeat)})`);
 }
 
 const MOUSE_BUTTONS = { left: 0, right: 1, middle: 2 };
@@ -250,7 +349,7 @@ const MOUSE_BUTTONS = { left: 0, right: 1, middle: 2 };
 function clickScript(x, y, options = {}) {
   const button = MOUSE_BUTTONS[options.button] ?? 0;
   const count = options.clicks === 2 ? 2 : 1;
-  return `${addType(INPUT_HELPER)}\n[JarvisInput]::Click(${x}, ${y}, ${button}, ${count})`;
+  return `[JarvisInput]::Click(${x}, ${y}, ${button}, ${count})`;
 }
 
 // x/y are pixel coordinates in the last screen_snapshot image sent to the model.
@@ -277,7 +376,7 @@ async function scroll(direction, amount) {
   const horizontal = direction === "left" || direction === "right";
   const sign = direction === "up" || direction === "right" ? 1 : -1;
   const delta = sign * 120 * Math.trunc(amount);
-  await runPowerShell(`${addType(INPUT_HELPER)}\n[JarvisInput]::Scroll(${delta}, $${horizontal})`);
+  await runPowerShell(`[JarvisInput]::Scroll(${delta}, $${horizontal})`);
 }
 
 // Captures the primary display at physical resolution and writes a PNG. Returns a full-size data URL
@@ -314,9 +413,7 @@ async function captureScreen(screenshotPath) {
 }
 
 async function inspectUi() {
-  return runPowerShell(`${addType(WINDOW_HELPER)}
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-$hwnd = [JarvisWindow]::GetForegroundWindow()
+  return runPowerShell(`$hwnd = [JarvisWindow]::GetForegroundWindow()
 $title = New-Object System.Text.StringBuilder 512
 [void][JarvisWindow]::GetWindowText($hwnd, $title, $title.Capacity)
 $processId = [uint32]0
@@ -337,11 +434,7 @@ Write-Output ("Role: " + $role)`);
 // Lists the foreground window's on-screen interactive elements with their exact bounding boxes via
 // UI Automation, so clicks can target an element instead of a pixel estimated from a screenshot.
 async function listUiElements() {
-  const output = await runPowerShell(`${addType(INPUT_HELPER)}
-${addType(WINDOW_HELPER)}
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-[JarvisInput]::UsePhysicalPixels()
-$A = [System.Windows.Automation.AutomationElement]
+  const output = await runPowerShell(`$A = [System.Windows.Automation.AutomationElement]
 $CT = [System.Windows.Automation.ControlType]
 $hwnd = [JarvisWindow]::GetForegroundWindow()
 $title = New-Object System.Text.StringBuilder 512
@@ -393,4 +486,4 @@ ConvertTo-Json -Compress -Depth 3 -InputObject ([pscustomobject]@{ window = $tit
   return { window: String(result.window || ""), count: elements.length, list: lines.join("\n") };
 }
 
-module.exports = { openApp, typeText, pressKey, click, clickElement, scroll, captureScreen, inspectUi, listUiElements };
+module.exports = { warmUp, openApp, typeText, pressKey, click, clickElement, scroll, captureScreen, inspectUi, listUiElements };

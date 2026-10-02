@@ -682,6 +682,7 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
     if (name === "set_mode") {
       currentMode = args.mode === "computer" ? "computer" : "display";
       setWindowMode(currentMode);
+      if (currentMode === "computer" && isWindows) windowsComputer.warmUp();
       return {
         ok: true,
         mode: currentMode,
