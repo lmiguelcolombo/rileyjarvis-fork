@@ -349,8 +349,16 @@ Write-Output $app.Name`,
   );
 }
 
+// Returns the title of the window that received the text, so Jarvis can tell when it typed into the wrong one.
 async function typeText(text) {
-  await runPowerShell(`[JarvisInput]::TypeText($env:JARVIS_TEXT)`, { JARVIS_TEXT: text }, 30000 + text.length * 20);
+  return runPowerShell(
+    `[JarvisInput]::TypeText($env:JARVIS_TEXT)
+$title = New-Object System.Text.StringBuilder 512
+[void][JarvisWindow]::GetWindowText([JarvisWindow]::GetForegroundWindow(), $title, $title.Capacity)
+Write-Output $title.ToString()`,
+    { JARVIS_TEXT: text },
+    30000 + text.length * 20,
+  );
 }
 
 async function pressKey(key, repeat) {

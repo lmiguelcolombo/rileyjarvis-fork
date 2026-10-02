@@ -865,7 +865,8 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
 
     if (name === "computer_type_text") {
       if (isWindows) {
-        await windowsComputer.typeText(String(args.text || ""));
+        const windowTitle = await windowsComputer.typeText(String(args.text || ""));
+        return { ok: true, message: `Typed text into the window "${windowTitle}". If that isn't the intended app, the text went to the wrong place.` };
       } else {
         await execFileAsync("osascript", ["-e", `tell application "System Events" to keystroke ${appleScriptString(args.text || "")}`]);
       }
