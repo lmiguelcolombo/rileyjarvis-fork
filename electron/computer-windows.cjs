@@ -12,9 +12,11 @@ const path = require("node:path");
 const MODEL_IMAGE_MAX_SIDE = 1280;
 const MODEL_IMAGE_MAX_BYTES = 180000;
 let snapshotGeometry = null;
-// Element boxes from the last listUiElements() call, in physical pixels, keyed by the id shown to the model.
-let uiElements = new Map();
+// Clickable items (UI Automation elements or OCR text) from the last ui_elements or screen_snapshot call,
+// in physical pixels, keyed by the number shown to the model.
+let targets = new Map();
 const MAX_UI_ELEMENTS = 150;
+const MAX_TEXT_ITEMS = 150;
 
 const INPUT_HELPER = `
 using System;
@@ -198,6 +200,19 @@ ${addType(INPUT_HELPER)}
 ${addType(WINDOW_HELPER)}
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 [JarvisInput]::UsePhysicalPixels()
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
+$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+$AsTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+  $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -like 'IAsyncOperation*' } |
+  Select-Object -First 1
+function Wait-JarvisAsync($operation, [Type]$type) {
+  $task = $AsTask.MakeGenericMethod($type).Invoke($null, @($operation))
+  $task.Wait()
+  $task.Result
+}
+$OcrEngine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
 [Console]::Out.WriteLine('READY')
 while ($null -ne ($line = [Console]::In.ReadLine())) {
   $request = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line)) | ConvertFrom-Json
@@ -363,13 +378,108 @@ async function click(x, y, options) {
   await runPowerShell(clickScript(Math.round(x * scaleX), Math.round(y * scaleY), options));
 }
 
-async function clickElement(id, options) {
-  const element = uiElements.get(Math.trunc(Number(id)));
-  if (!element) throw new Error(`No element #${id}. Call ui_elements again; the list resets after each call.`);
-  const x = Math.round(element.x + element.w / 2);
-  const y = Math.round(element.y + element.h / 2);
-  await runPowerShell(clickScript(x, y, options));
-  return element;
+async function clickItem(id, options) {
+  const item = targets.get(Math.trunc(Number(id)));
+  if (!item) throw new Error(`No item #${id}. Call screen_snapshot or ui_elements again; each call renumbers the list.`);
+  await runPowerShell(clickScript(Math.round(item.x + item.w / 2), Math.round(item.y + item.h / 2), options));
+  return item;
+}
+
+// Folds case, accents and punctuation: Windows OCR drops diacritics ("Luís" reads as "Luis") and
+// Jarvis hears names spoken, not spelled.
+function normalizeText(text) {
+  return String(text || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+// Finds OCR lines containing the query, boxed to the shortest run of words that matches. Whole-line
+// matches come first (a chat named "meu amor" beats a preview reading "meu amor added..."), then reading order.
+function findTextMatches(lines, query) {
+  const wanted = normalizeText(query);
+  if (!wanted) throw new Error("Give the text to click as it appears on screen.");
+  const matches = [];
+  for (const line of lines) {
+    const words = line.words.map((word) => ({ ...word, norm: normalizeText(word.t) })).filter((word) => word.norm);
+    const lineNorm = words.map((word) => word.norm).join(" ");
+    if (!lineNorm.includes(wanted)) continue;
+    let best = null;
+    for (let start = 0; start < words.length; start++) {
+      let joined = "";
+      for (let end = start; end < words.length; end++) {
+        joined = end === start ? words[end].norm : `${joined} ${words[end].norm}`;
+        if (joined.includes(wanted)) {
+          if (!best || end - start < best.end - best.start) best = { start, end };
+          break;
+        }
+      }
+    }
+    const span = words.slice(best.start, best.end + 1);
+    const left = Math.min(...span.map((word) => word.x));
+    const top = Math.min(...span.map((word) => word.y));
+    const right = Math.max(...span.map((word) => word.x + word.w));
+    const bottom = Math.max(...span.map((word) => word.y + word.h));
+    matches.push({ text: line.text, exact: lineNorm === wanted, x: left, y: top, w: right - left, h: bottom - top });
+  }
+  return matches.sort((a, b) => Number(b.exact) - Number(a.exact) || a.y - b.y || a.x - b.x);
+}
+
+// Clicks visible text found by OCR on a fresh capture, so Jarvis never has to estimate coordinates for
+// anything with a label: contacts, links, menu items, buttons, placeholder text in input fields.
+async function clickText(query, options = {}) {
+  const ocrPath = path.join(os.tmpdir(), `jarvis-ocr-${process.pid}.png`);
+  const { image } = await grabScreen();
+  await fs.writeFile(ocrPath, image.toPNG());
+  const lines = await recognizeText(ocrPath);
+  const matches = findTextMatches(lines, query);
+  if (matches.length === 0) {
+    const visible = lines.slice(0, 60).map((line) => line.text).join(" | ");
+    throw new Error(`"${query}" is not visible on screen. Visible text: ${visible}`);
+  }
+  const occurrence = Math.trunc(Number(options.occurrence || 1));
+  if (occurrence < 1 || occurrence > matches.length) {
+    throw new Error(`Only ${matches.length} match(es) for "${query}".`);
+  }
+  const match = matches[occurrence - 1];
+  await runPowerShell(clickScript(Math.round(match.x + match.w / 2), Math.round(match.y + match.h / 2), options));
+  return { clicked: match.text, occurrence, matches: matches.map((item) => item.text) };
+}
+
+// Runs Windows OCR (Windows.Media.Ocr, using the user's profile languages) on a PNG.
+// Returns lines with per-word boxes in the image's pixels, which are physical screen pixels for our captures.
+async function recognizeText(imagePath) {
+  const output = await runPowerShell(
+    `if (-not $OcrEngine) { throw 'Windows OCR is unavailable: no OCR language pack for the profile languages.' }
+$file = Wait-JarvisAsync ([Windows.Storage.StorageFile]::GetFileFromPathAsync($env:JARVIS_IMAGE)) ([Windows.Storage.StorageFile])
+$stream = Wait-JarvisAsync ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+try {
+  $decoder = Wait-JarvisAsync ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+  $bitmap = Wait-JarvisAsync ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+  $result = Wait-JarvisAsync ($OcrEngine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+} finally { $stream.Dispose() }
+$lines = foreach ($line in $result.Lines) {
+  [pscustomobject]@{ words = @($line.Words | ForEach-Object {
+    $r = $_.BoundingRect
+    [pscustomobject]@{ t = $_.Text; x = [int]$r.X; y = [int]$r.Y; w = [int]$r.Width; h = [int]$r.Height } }) }
+}
+ConvertTo-Json -Compress -Depth 4 -InputObject @($lines)`,
+    { JARVIS_IMAGE: imagePath },
+  );
+  const parsed = JSON.parse(output || "[]");
+  return (Array.isArray(parsed) ? parsed : [parsed])
+    .map((line) => ({ words: Array.isArray(line.words) ? line.words : [line.words], text: "" }))
+    .map((line) => ({ ...line, text: line.words.map((word) => word.t).join(" ") }))
+    .filter((line) => line.words.length > 0 && line.text.trim());
+}
+
+function snapshotPoint(item) {
+  if (!snapshotGeometry) return "";
+  const x = Math.round((item.x + item.w / 2) / snapshotGeometry.scaleX);
+  const y = Math.round((item.y + item.h / 2) / snapshotGeometry.scaleY);
+  return ` at (${x}, ${y})`;
 }
 
 async function scroll(direction, amount) {
@@ -379,9 +489,7 @@ async function scroll(direction, amount) {
   await runPowerShell(`[JarvisInput]::Scroll(${delta}, $${horizontal})`);
 }
 
-// Captures the primary display at physical resolution and writes a PNG. Returns a full-size data URL
-// for the artifact panel and a smaller JPEG for the model, whose geometry click() maps back from.
-async function captureScreen(screenshotPath) {
+async function grabScreen() {
   const display = screen.getPrimaryDisplay();
   const thumbnailSize = {
     width: Math.round(display.size.width * display.scaleFactor),
@@ -390,7 +498,14 @@ async function captureScreen(screenshotPath) {
   const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize });
   const source = sources.find((item) => item.display_id === String(display.id)) || sources[0];
   if (!source || source.thumbnail.isEmpty()) throw new Error("Screen capture returned no image.");
-  const image = source.thumbnail;
+  return { image: source.thumbnail };
+}
+
+// Captures the primary display at physical resolution and writes a PNG. Returns a full-size data URL
+// for the artifact panel, a smaller JPEG for the model (whose geometry click() maps back from), and the
+// on-screen text found by OCR as a numbered list for computer_click_item.
+async function captureScreen(screenshotPath) {
+  const { image } = await grabScreen();
   await fs.writeFile(screenshotPath, image.toPNG());
 
   const physical = image.getSize();
@@ -404,11 +519,29 @@ async function captureScreen(screenshotPath) {
     jpeg = resized.toJPEG(quality);
   }
   snapshotGeometry = { width, height, scaleX: physical.width / width, scaleY: physical.height / height };
+
+  let textList;
+  try {
+    const lines = (await recognizeText(screenshotPath)).slice(0, MAX_TEXT_ITEMS);
+    const items = lines.map((line) => {
+      const left = Math.min(...line.words.map((word) => word.x));
+      const top = Math.min(...line.words.map((word) => word.y));
+      const right = Math.max(...line.words.map((word) => word.x + word.w));
+      const bottom = Math.max(...line.words.map((word) => word.y + word.h));
+      return { type: "Text", name: line.text, x: left, y: top, w: right - left, h: bottom - top };
+    }).sort((a, b) => a.y - b.y || a.x - b.x);
+    targets = new Map(items.map((item, index) => [index + 1, item]));
+    textList = items.map((item, index) => `[${index + 1}] "${item.name.slice(0, 80)}"${snapshotPoint(item)}`).join("\n");
+  } catch (error) {
+    textList = `Text recognition failed: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
   return {
     displayUrl: image.toDataURL(),
     modelImage: `data:image/jpeg;base64,${jpeg.toString("base64")}`,
     width,
     height,
+    textList,
   };
 }
 
@@ -474,16 +607,13 @@ ConvertTo-Json -Compress -Depth 3 -InputObject ([pscustomobject]@{ window = $tit
     .filter((element) => String(element.name || "").trim() || element.type === "Edit" || element.type === "ComboBox")
     .sort((a, b) => a.y - b.y || a.x - b.x)
     .slice(0, MAX_UI_ELEMENTS);
-  uiElements = new Map(elements.map((element, index) => [index + 1, element]));
+  targets = new Map(elements.map((element, index) => [index + 1, element]));
 
   const lines = elements.map((element, index) => {
     const name = String(element.name || "").replace(/\s+/g, " ").trim().slice(0, 80);
-    const center = snapshotGeometry
-      ? ` at (${Math.round((element.x + element.w / 2) / snapshotGeometry.scaleX)}, ${Math.round((element.y + element.h / 2) / snapshotGeometry.scaleY)})`
-      : "";
-    return `[${index + 1}] ${element.type}${name ? ` "${name}"` : ""}${center}${element.enabled === false ? " (disabled)" : ""}`;
+    return `[${index + 1}] ${element.type}${name ? ` "${name}"` : ""}${snapshotPoint(element)}${element.enabled === false ? " (disabled)" : ""}`;
   });
   return { window: String(result.window || ""), count: elements.length, list: lines.join("\n") };
 }
 
-module.exports = { warmUp, openApp, typeText, pressKey, click, clickElement, scroll, captureScreen, inspectUi, listUiElements };
+module.exports = { warmUp, openApp, typeText, pressKey, click, clickItem, clickText, scroll, captureScreen, inspectUi, listUiElements };

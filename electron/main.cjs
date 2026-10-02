@@ -48,12 +48,13 @@ Speak Brazilian Portuguese (pt-BR) by default. Always reply in the language Luis
 - Explain what you are doing in one short sentence before longer tool work. Do not over-explain.
 
 # Computer Use
-- Never guess where something is on screen. Call screen_snapshot and look at the image before clicking.
-- To click, prefer ui_elements then computer_click_element: it uses the app's exact element positions. Match the element by name, type, and position in the snapshot.
-- Fall back to computer_click only when the target is not in the ui_elements list (images, canvases, some web content). Its coordinates come from the most recent snapshot image. Aim for the center of the target.
-- Element numbers are only valid until the next ui_elements call; list again after the screen changes.
-- The screen changes after clicking, scrolling, typing, or opening apps: take a new snapshot before the next click, and after a click to confirm it worked.
-- If a click missed, look at the new snapshot and correct the coordinates instead of repeating the same ones.
+- Never guess where something is on screen. Look first: screen_snapshot shows the screen and lists the text on it.
+- To click anything that shows words (a contact or chat, link, menu item, button label, or a field's placeholder like "Type a message"), use computer_click_text with those words, or computer_click_item with its number from the latest list. These use exact positions and are far more accurate than coordinates.
+- For icons and controls without text, call ui_elements and use computer_click_item.
+- Use computer_click with coordinates only as a last resort, for targets with no text and not in ui_elements. Coordinates come from the most recent snapshot image; aim for the center.
+- Item numbers are only valid until the next screen_snapshot or ui_elements call.
+- To type into a field, click the field first (e.g. computer_click_text "Type a message"), then computer_type_text.
+- The screen changes after clicking, typing, scrolling, or opening apps. Take a new snapshot to confirm a step worked before the next one, and if it didn't, correct course instead of repeating the same action.
 
 # Artifacts
 Use artifacts for menus, web results, graphics, notes, database tables, code snippets, and task progress. If the user asks to show, hide, or fullscreen the artifacts panel, call the artifact tool.
@@ -346,12 +347,30 @@ const toolSpecs = [
   },
   {
     type: "function",
-    name: "computer_click_element",
-    description: "Click the center of an element listed by ui_elements, using its exact on-screen position. Windows only. Requires computer mode. Ask for confirmation before clicking buttons that send, delete, buy, submit, or change settings.",
+    name: "computer_click_text",
+    description: "Click visible text on screen, found by OCR on a fresh capture: a contact or chat name, link, menu item, button label, or an input field's placeholder (e.g. \"Type a message\"). The most reliable way to click anything that shows words. Accents and case don't matter. Windows only. Requires computer mode. Ask for confirmation before clicking buttons that send, delete, buy, submit, or change settings.",
     parameters: {
       type: "object",
       properties: {
-        id: { type: "number", description: "Element number from the latest ui_elements list." },
+        text: { type: "string", description: "The words to click, as they appear on screen. Keep it short and distinctive." },
+        occurrence: { type: "number", minimum: 1, description: "Which match to click when the text appears more than once (whole-line matches first, then top to bottom). Defaults to 1." },
+        button: { type: "string", enum: ["left", "right", "middle"], description: "Defaults to left. Windows only." },
+        clicks: { type: "number", enum: [1, 2], description: "2 for a double click. Windows only." },
+        confirmed: { type: "boolean" },
+        risk: { type: "string", enum: ["low", "may_send_or_modify", "private_or_sensitive"] },
+      },
+      required: ["text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "computer_click_item",
+    description: "Click the center of a numbered item from the latest screen_snapshot text list or ui_elements list, using its exact on-screen position. Windows only. Requires computer mode. Ask for confirmation before clicking buttons that send, delete, buy, submit, or change settings.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "number", description: "Item number from the most recent screen_snapshot or ui_elements list." },
         button: { type: "string", enum: ["left", "right", "middle"], description: "Defaults to left. Windows only." },
         clicks: { type: "number", enum: [1, 2], description: "2 for a double click. Windows only." },
         confirmed: { type: "boolean" },
@@ -378,7 +397,7 @@ const toolSpecs = [
   {
     type: "function",
     name: "screen_snapshot",
-    description: "Capture the current screen. On Windows the screenshot is attached to the conversation so you can see it. Requires computer mode.",
+    description: "Capture the current screen. On Windows the screenshot is attached to the conversation so you can see it, along with a numbered list of the text on screen (clickable with computer_click_item). Requires computer mode.",
     parameters: {
       type: "object",
       properties: {},
@@ -388,7 +407,7 @@ const toolSpecs = [
   {
     type: "function",
     name: "ui_elements",
-    description: "List the clickable elements (buttons, links, fields, tabs, menu items) visible in the foreground window, numbered for computer_click_element. Positions shown are in the latest screen_snapshot image. Windows only. Requires computer mode.",
+    description: "List the clickable elements (buttons, links, fields, tabs, menu items) visible in the foreground window, numbered for computer_click_item. Use it for icons and controls without visible text; many apps (WhatsApp, web pages) expose little here, so prefer computer_click_text for anything with words. Positions shown are in the latest screen_snapshot image. Windows only. Requires computer mode.",
     parameters: {
       type: "object",
       properties: {},
@@ -879,13 +898,27 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
       return { ok: true, message: `Clicked ${args.x}, ${args.y}.` };
     }
 
-    if (name === "computer_click_element") {
-      if (!isWindows) return { ok: false, error: "computer_click_element is only available on Windows." };
+    if (name === "computer_click_text") {
+      if (!isWindows) return { ok: false, error: "computer_click_text is only available on Windows." };
       if (requiresConfirmation(args)) {
         return { ok: false, requiresConfirmation: true, message: "Confirmation required before clicking a risky target." };
       }
-      const element = await windowsComputer.clickElement(args.id, { button: args.button, clicks: args.clicks });
-      return { ok: true, message: `Clicked #${args.id} ${element.type} "${element.name || ""}".` };
+      const result = await windowsComputer.clickText(String(args.text || ""), {
+        occurrence: args.occurrence,
+        button: args.button,
+        clicks: args.clicks,
+      });
+      const others = result.matches.length > 1 ? ` ${result.matches.length} matches, in order: ${result.matches.slice(0, 8).map((text) => `"${text}"`).join(", ")}.` : "";
+      return { ok: true, message: `Clicked "${result.clicked}" (match ${result.occurrence}).${others}` };
+    }
+
+    if (name === "computer_click_item") {
+      if (!isWindows) return { ok: false, error: "computer_click_item is only available on Windows." };
+      if (requiresConfirmation(args)) {
+        return { ok: false, requiresConfirmation: true, message: "Confirmation required before clicking a risky target." };
+      }
+      const item = await windowsComputer.clickItem(args.id, { button: args.button, clicks: args.clicks });
+      return { ok: true, message: `Clicked #${args.id} ${item.type} "${item.name || ""}".` };
     }
 
     if (name === "ui_elements") {
@@ -923,7 +956,8 @@ ipcMain.handle("tools:execute", async (_event, toolCall) => {
           path: screenshotPath,
           imageWidth: snapshot.width,
           imageHeight: snapshot.height,
-          message: `The screenshot (${snapshot.width}x${snapshot.height}) is attached as the next message. computer_click x/y are pixel coordinates in this image.`,
+          message: `The screenshot (${snapshot.width}x${snapshot.height}) is attached as the next message. text_on_screen lists the text found on it; click those with computer_click_text or computer_click_item. computer_click x/y are pixel coordinates in this image.`,
+          text_on_screen: snapshot.textList,
           modelImage: snapshot.modelImage,
           artifact: {
             title: "Screen Snapshot",
