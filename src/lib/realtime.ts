@@ -63,6 +63,10 @@ export class JarvisRealtimeClient {
   private currentAssistantText = "";
   private toolSpecs: JarvisToolSpec[] = [];
   private toolRunning = false;
+  // Realtime rejects response.create while a response is in progress, which happens when Luis speaks
+  // (server VAD starts a response) while a tool is still running. Requests made then wait for response.done.
+  private responseActive = false;
+  private responsePending = false;
   private audioContext: AudioContext | null = null;
   private outputAnalyser: AnalyserNode | null = null;
   private outputMeterFrame = 0;
@@ -149,6 +153,8 @@ export class JarvisRealtimeClient {
     this.pc = null;
     this.micStream = null;
     this.currentAssistantText = "";
+    this.responseActive = false;
+    this.responsePending = false;
     this.callbacks.onConnectionState("idle");
     this.callbacks.onMood("idle");
     this.callbacks.onMouthShape(silentMouthShape());
@@ -169,14 +175,21 @@ export class JarvisRealtimeClient {
         content: [{ type: "input_text", text }],
       },
     });
-    this.sendEvent({ type: "response.create" });
+    this.requestResponse();
   }
 
   private async handleServerEvent(raw: string): Promise<void> {
     const event = safeParseEvent(raw);
     if (!event.type) return;
 
+    if (event.type === "response.created") {
+      this.responseActive = true;
+      return;
+    }
+
     if (event.type === "error") {
+      // A failed response.create never produces response.done, so don't stay blocked on it.
+      this.responseActive = false;
       debugLog({ kind: "error", message: event.error?.message });
       this.callbacks.onMood("error");
       this.callbacks.onStatus(event.error?.message || "Realtime API returned an error.");
@@ -222,6 +235,11 @@ export class JarvisRealtimeClient {
     }
 
     if (event.type === "response.done") {
+      this.responseActive = false;
+      if (this.responsePending) {
+        this.responsePending = false;
+        this.requestResponse();
+      }
       const output = event.response?.output || [];
       const spoken = this.currentAssistantText || output.map(collectOutputText).filter(Boolean).join("\n");
       if (spoken) {
@@ -293,7 +311,7 @@ export class JarvisRealtimeClient {
       if (typeof result.modelImage === "string") this.sendImage(result.modelImage);
     }
 
-    if (shouldCreateResponse) this.sendEvent({ type: "response.create" });
+    if (shouldCreateResponse) this.requestResponse();
     this.toolRunning = false;
   }
 
@@ -306,6 +324,15 @@ export class JarvisRealtimeClient {
         output: JSON.stringify(sanitizeToolResult(result)),
       },
     });
+  }
+
+  private requestResponse(): void {
+    if (this.responseActive) {
+      this.responsePending = true;
+      return;
+    }
+    // Marked active on send, not on response.created, so two requests in a row can't both go out.
+    if (this.sendEvent({ type: "response.create" })) this.responseActive = true;
   }
 
   // Screenshots go in as a user image item so the model can actually see the screen.
