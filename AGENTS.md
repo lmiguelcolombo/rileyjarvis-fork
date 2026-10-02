@@ -11,7 +11,7 @@ There is no test suite. A change is verified when:
 
 - `npm run typecheck` is clean. From WSL, run npm through Windows (`cmd.exe /c "npm run typecheck"`): `node_modules` is installed for Windows.
 - Every changed `.cjs` file passes `node --check` (the Electron main process isn't typechecked).
-- Changed behaviour was exercised for real, or the report to Luis says it wasn't.
+- Changed behaviour was exercised for real, or the report to Luis says it wasn't. For computer use, follow the testing section of `docs/agents/computer-use.md`.
 
 # Version control
 
@@ -22,6 +22,10 @@ The git log is this project's decision record: every change is an **atomic** com
 - Subject: imperative, ≤72 chars, conventional prefix (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`).
 - Body: the _why_ — root cause for fixes, the decision taken and alternatives rejected for features. Someone running `git log` later should be able to reconstruct the reasoning without this conversation.
 - Done = `git status` shows no uncommitted changes of yours and `main` level with `origin/main`.
+
+# Computer use
+
+Before changing computer-use tools, screenshots, mouse or keyboard input, the PowerShell worker, OCR, UI Automation, or the Computer Use section of `JARVIS_INSTRUCTIONS`, read `docs/agents/computer-use.md`.
 
 # Diagnosing Jarvis
 
